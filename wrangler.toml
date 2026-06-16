@@ -5,5 +5,5 @@ pages_build_output_dir = "dist"
 [[d1_databases]]
 binding = "DB"
 database_name = "points-redemption-dashboard"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "cf67f42f-f49b-4169-9710-5c03a4b26158"
 migrations_dir = "migrations"
