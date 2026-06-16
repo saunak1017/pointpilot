@@ -413,8 +413,8 @@ function importRowsFromSheet(rows) {
     });
 }
 
-function useLocalBookings() {
-  const [bookings, setBookings] = useState(() => {
+function useBookings() {
+  const [bookings, setBookingsState] = useState(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return [];
@@ -424,12 +424,79 @@ function useLocalBookings() {
       return [];
     }
   });
+  const [syncState, setSyncState] = useState({ mode: 'local', loading: true, saving: false, error: '' });
+  const loadedRemoteRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadRemoteBookings() {
+      try {
+        const response = await fetch('/api/bookings');
+        if (!response.ok) throw new Error(`Remote storage returned ${response.status}`);
+        const payload = await response.json();
+        if (cancelled) return;
+        const remoteBookings = Array.isArray(payload.bookings) ? payload.bookings.map(normalizeBooking) : [];
+        loadedRemoteRef.current = true;
+        setBookingsState((localBookings) => {
+          const merged = mergeBookings(remoteBookings, localBookings);
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+          return merged;
+        });
+        setSyncState({ mode: 'cloud', loading: false, saving: false, error: '' });
+      } catch (err) {
+        if (cancelled) return;
+        loadedRemoteRef.current = true;
+        setSyncState({ mode: 'local', loading: false, saving: false, error: err.message || 'Cloud storage unavailable' });
+      }
+    }
+    loadRemoteBookings();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(bookings));
-  }, [bookings]);
+    if (!loadedRemoteRef.current || syncState.mode !== 'cloud') return;
+    const controller = new AbortController();
+    setSyncState((current) => ({ ...current, saving: true, error: '' }));
+    const timeout = setTimeout(async () => {
+      try {
+        const response = await fetch('/api/bookings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bookings }),
+          signal: controller.signal
+        });
+        if (!response.ok) throw new Error(`Save failed with status ${response.status}`);
+        setSyncState((current) => ({ ...current, saving: false, error: '' }));
+      } catch (err) {
+        if (err.name === 'AbortError') return;
+        setSyncState((current) => ({ ...current, mode: 'local', saving: false, error: err.message || 'Cloud save failed' }));
+      }
+    }, 350);
+    return () => {
+      controller.abort();
+      clearTimeout(timeout);
+    };
+  }, [bookings, syncState.mode]);
 
-  return [bookings, setBookings];
+  return [bookings, setBookingsState, syncState];
+}
+
+function bookingTimestamp(booking) {
+  const stamp = Date.parse(booking.updatedAt || booking.createdAt || '');
+  return Number.isNaN(stamp) ? 0 : stamp;
+}
+
+function mergeBookings(primaryBookings, secondaryBookings) {
+  const merged = new Map();
+  [...primaryBookings, ...secondaryBookings].forEach((booking) => {
+    const normalized = normalizeBooking(booking);
+    const current = merged.get(normalized.id);
+    if (!current || bookingTimestamp(normalized) >= bookingTimestamp(current)) merged.set(normalized.id, normalized);
+  });
+  return [...merged.values()].sort((a, b) => bookingTimestamp(b) - bookingTimestamp(a));
 }
 
 function getUniqueValues(bookings, getter) {
@@ -600,7 +667,7 @@ function filterBookings(bookings, filters) {
 }
 
 function App() {
-  const [bookings, setBookings] = useLocalBookings();
+  const [bookings, setBookings, syncState] = useBookings();
   const [activeTab, setActiveTab] = useState('dashboard');
   const [editingId, setEditingId] = useState(null);
   const [filters, setFilters] = useState({ query: '', program: 'All', year: 'All', cabin: 'All', source: 'All' });
@@ -668,6 +735,7 @@ function App() {
           <span className="eyebrow">All-time</span>
           <strong>{points(allAnalytics.stats.totalPoints)} pts</strong>
           <span>{allAnalytics.stats.totalBookings} bookings · {allAnalytics.stats.totalSegments} segments</span>
+          <span className={`sync-pill ${syncState.mode}`}>{syncState.loading ? 'Checking storage…' : syncState.saving ? 'Saving…' : syncState.mode === 'cloud' ? 'D1 synced' : 'Local only'}</span>
         </div>
       </aside>
 
@@ -692,7 +760,7 @@ function App() {
             onDuplicate={duplicateBooking}
           />
         )}
-        {activeTab === 'data' && <DataTools bookings={bookings} setBookings={setBookings} />}
+        {activeTab === 'data' && <DataTools bookings={bookings} setBookings={setBookings} syncState={syncState} />}
       </main>
     </div>
   );
@@ -1292,7 +1360,7 @@ function DetailItem({ label, value }) {
   return <div className="detail-item"><span>{label}</span><strong>{value}</strong></div>;
 }
 
-function DataTools({ bookings, setBookings }) {
+function DataTools({ bookings, setBookings, syncState }) {
   const excelRef = useRef(null);
   const jsonRef = useRef(null);
   const [status, setStatus] = useState('');
@@ -1376,9 +1444,10 @@ function DataTools({ bookings, setBookings }) {
     <div className="data-tools">
       <section className="data-card hero-panel smaller">
         <div>
-          <span className="eyebrow"><Database size={14} /> Local data</span>
-          <h3>Your data lives in this browser</h3>
-          <p>Deploy the app publicly, then import your spreadsheet privately in your own browser. Use JSON export as your backup.</p>
+          <span className="eyebrow"><Database size={14} /> {syncState.mode === 'cloud' ? 'Cloud data' : 'Local data'}</span>
+          <h3>{syncState.mode === 'cloud' ? 'Your data syncs to D1' : 'Your data lives in this browser'}</h3>
+          <p>{syncState.mode === 'cloud' ? 'Bookings are saved through the Pages Function API backed by Cloudflare D1. JSON export is still recommended before large imports.' : 'D1 storage is unavailable in this environment, so changes are saved to this browser. Use JSON export as your backup.'}</p>
+          {syncState.error && <p className="storage-warning">Storage note: {syncState.error}</p>}
         </div>
         <div className="hero-metric">
           <span>Saved bookings</span>

@@ -691,3 +691,28 @@ select option { color: #07111f; }
   .filter-rack .search-box,
   .filter-rack .primary-button { grid-column: 1 / -1; }
 }
+
+.sync-pill {
+  width: fit-content;
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 5px 9px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.sync-pill.cloud {
+  border-color: rgba(81, 246, 168, 0.32);
+  color: var(--green);
+  background: rgba(81, 246, 168, 0.08);
+}
+.sync-pill.local {
+  border-color: rgba(247, 198, 106, 0.32);
+  color: var(--gold);
+  background: rgba(247, 198, 106, 0.08);
+}
+.storage-warning {
+  margin-top: 10px !important;
+  color: var(--gold) !important;
+  font-size: 13px;
+}

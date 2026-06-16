@@ -16,7 +16,28 @@ No `package-lock.json` is included. The included `.npmrc` also sets `package-loc
 
 ## Data storage
 
-This version stores data in your browser using `localStorage`. Use the Import / Export tab to back up your data as JSON or import your existing Excel tracker.
+The dashboard now supports Cloudflare D1-backed saving through the Pages Function at `/api/bookings`. The app still keeps a `localStorage` copy as a fallback when the D1 binding is not available, such as during a plain Vite dev session. Use the Import / Export tab to back up your data as JSON or import your existing Excel tracker.
+
+### Create and migrate the D1 database
+
+1. Create the database:
+   ```sh
+   npx wrangler d1 create points-redemption-dashboard
+   ```
+2. Copy the returned database ID into `wrangler.toml` by replacing `REPLACE_WITH_YOUR_D1_DATABASE_ID`.
+3. Apply the migration locally for development:
+   ```sh
+   npx wrangler d1 migrations apply points-redemption-dashboard --local
+   ```
+4. Apply the migration remotely before production use:
+   ```sh
+   npx wrangler d1 migrations apply points-redemption-dashboard --remote
+   ```
+5. For local testing with the Pages Function and D1 binding, build and run Wrangler Pages instead of plain Vite:
+   ```sh
+   npm run build
+   npx wrangler pages dev dist
+   ```
 
 ## Excel import
 
