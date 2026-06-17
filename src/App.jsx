@@ -34,6 +34,7 @@ import {
   Filter,
   Gauge,
   Layers,
+  LogOut,
   Plane,
   Plus,
   RefreshCw,
@@ -41,11 +42,13 @@ import {
   Sparkles,
   Trash2,
   Upload,
+  User,
   WalletCards,
   X
 } from 'lucide-react';
 
 const STORAGE_KEY = 'points-redemption-dashboard-v1';
+const userStorageKey = (user) => (user?.id ? `${STORAGE_KEY}:${user.id}` : STORAGE_KEY);
 const DEFAULT_POINTS_PROGRAMS = ['American Express', 'Chase', 'Capital One', 'Bilt', 'Citi'];
 const DEFAULT_REDEMPTION_TYPES = ['Redemption', 'Upgrade', 'Redemption + Upgrade', 'Cash + Points', 'Other'];
 const DEFAULT_FARE_TYPES = ['Saver', 'Dynamic', 'Standard', 'Special Award', 'Unknown'];
@@ -413,8 +416,56 @@ function importRowsFromSheet(rows) {
     });
 }
 
-function useLocalBookings() {
-  const [bookings, setBookings] = useState(() => {
+
+function useAuth() {
+  const [authState, setAuthState] = useState({ loading: true, authAvailable: true, user: null, error: '' });
+
+  async function refreshAuth() {
+    try {
+      const response = await fetch('/api/auth/me');
+      const payload = await response.json().catch(() => ({}));
+      if (response.status === 503 || payload.authAvailable === false) {
+        setAuthState({ loading: false, authAvailable: false, user: null, error: payload.error || 'Account storage unavailable' });
+        return;
+      }
+      setAuthState({ loading: false, authAvailable: true, user: payload.user || null, error: response.ok ? '' : payload.error || '' });
+    } catch (err) {
+      setAuthState({ loading: false, authAvailable: false, user: null, error: err.message || 'Account API unavailable' });
+    }
+  }
+
+  useEffect(() => {
+    refreshAuth();
+  }, []);
+
+  async function submitAuth(mode, values) {
+    setAuthState((current) => ({ ...current, loading: true, error: '' }));
+    try {
+      const response = await fetch(`/api/auth/${mode}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(values)
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error([payload.error, payload.detail].filter(Boolean).join(' ') || 'Authentication failed');
+      setAuthState({ loading: false, authAvailable: true, user: payload.user, error: '' });
+      return payload.user;
+    } catch (err) {
+      setAuthState((current) => ({ ...current, loading: false, error: err.message || 'Authentication failed' }));
+      throw err;
+    }
+  }
+
+  async function logout() {
+    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => null);
+    setAuthState({ loading: false, authAvailable: true, user: null, error: '' });
+  }
+
+  return { ...authState, login: (values) => submitAuth('login', values), register: (values) => submitAuth('register', values), logout };
+}
+
+function useBookings(auth) {
+  const [bookings, setBookingsState] = useState(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return [];
@@ -424,12 +475,92 @@ function useLocalBookings() {
       return [];
     }
   });
+  const [syncState, setSyncState] = useState({ mode: 'local', loading: true, saving: false, error: '' });
+  const loadedRemoteRef = useRef(false);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(bookings));
-  }, [bookings]);
+    if (auth.loading) return undefined;
+    if (!auth.authAvailable || !auth.user) {
+      loadedRemoteRef.current = true;
+      setSyncState({ mode: 'local', loading: false, saving: false, error: auth.authAvailable ? 'Sign in to use D1 sync.' : auth.error });
+      return undefined;
+    }
 
-  return [bookings, setBookings];
+    loadedRemoteRef.current = false;
+    try {
+      const cached = localStorage.getItem(userStorageKey(auth.user));
+      const parsed = cached ? JSON.parse(cached) : [];
+      setBookingsState(Array.isArray(parsed) ? parsed.map(normalizeBooking) : []);
+    } catch {
+      setBookingsState([]);
+    }
+
+    let cancelled = false;
+    async function loadRemoteBookings() {
+      try {
+        const response = await fetch('/api/bookings');
+        if (!response.ok) throw new Error(`Remote storage returned ${response.status}`);
+        const payload = await response.json();
+        if (cancelled) return;
+        const remoteBookings = Array.isArray(payload.bookings) ? payload.bookings.map(normalizeBooking) : [];
+        loadedRemoteRef.current = true;
+        setBookingsState(remoteBookings);
+        localStorage.setItem(userStorageKey(auth.user), JSON.stringify(remoteBookings));
+        setSyncState({ mode: 'cloud', loading: false, saving: false, error: '' });
+      } catch (err) {
+        if (cancelled) return;
+        loadedRemoteRef.current = true;
+        setSyncState({ mode: 'local', loading: false, saving: false, error: err.message || 'Cloud storage unavailable' });
+      }
+    }
+    loadRemoteBookings();
+    return () => {
+      cancelled = true;
+    };
+  }, [auth.loading, auth.authAvailable, auth.user?.id]);
+
+  useEffect(() => {
+    localStorage.setItem(userStorageKey(auth.user), JSON.stringify(bookings));
+    if (!loadedRemoteRef.current || syncState.mode !== 'cloud' || !auth.user) return;
+    const controller = new AbortController();
+    setSyncState((current) => ({ ...current, saving: true, error: '' }));
+    const timeout = setTimeout(async () => {
+      try {
+        const response = await fetch('/api/bookings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bookings }),
+          signal: controller.signal
+        });
+        if (!response.ok) throw new Error(`Save failed with status ${response.status}`);
+        setSyncState((current) => ({ ...current, saving: false, error: '' }));
+      } catch (err) {
+        if (err.name === 'AbortError') return;
+        setSyncState((current) => ({ ...current, mode: 'local', saving: false, error: err.message || 'Cloud save failed' }));
+      }
+    }, 350);
+    return () => {
+      controller.abort();
+      clearTimeout(timeout);
+    };
+  }, [bookings, syncState.mode, auth.user?.id]);
+
+  return [bookings, setBookingsState, syncState];
+}
+
+function bookingTimestamp(booking) {
+  const stamp = Date.parse(booking.updatedAt || booking.createdAt || '');
+  return Number.isNaN(stamp) ? 0 : stamp;
+}
+
+function mergeBookings(primaryBookings, secondaryBookings) {
+  const merged = new Map();
+  [...primaryBookings, ...secondaryBookings].forEach((booking) => {
+    const normalized = normalizeBooking(booking);
+    const current = merged.get(normalized.id);
+    if (!current || bookingTimestamp(normalized) >= bookingTimestamp(current)) merged.set(normalized.id, normalized);
+  });
+  return [...merged.values()].sort((a, b) => bookingTimestamp(b) - bookingTimestamp(a));
 }
 
 function getUniqueValues(bookings, getter) {
@@ -600,7 +731,8 @@ function filterBookings(bookings, filters) {
 }
 
 function App() {
-  const [bookings, setBookings] = useLocalBookings();
+  const auth = useAuth();
+  const [bookings, setBookings, syncState] = useBookings(auth);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [editingId, setEditingId] = useState(null);
   const [filters, setFilters] = useState({ query: '', program: 'All', year: 'All', cabin: 'All', source: 'All' });
@@ -648,6 +780,9 @@ function App() {
 
   const editingBooking = editingId ? bookings.find((item) => item.id === editingId) : null;
 
+  if (auth.loading && auth.authAvailable) return <LoadingScreen />;
+  if (auth.authAvailable && !auth.user) return <AuthScreen auth={auth} />;
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -668,6 +803,10 @@ function App() {
           <span className="eyebrow">All-time</span>
           <strong>{points(allAnalytics.stats.totalPoints)} pts</strong>
           <span>{allAnalytics.stats.totalBookings} bookings · {allAnalytics.stats.totalSegments} segments</span>
+          <span className={`sync-pill ${syncState.mode}`}>{syncState.loading ? 'Checking storage…' : syncState.saving ? 'Saving…' : syncState.mode === 'cloud' ? 'D1 synced' : 'Local only'}</span>
+          {auth.user ? (
+            <button className="account-button" onClick={auth.logout}><User size={15} /> {auth.user.name || auth.user.email} <LogOut size={14} /></button>
+          ) : null}
         </div>
       </aside>
 
@@ -692,8 +831,78 @@ function App() {
             onDuplicate={duplicateBooking}
           />
         )}
-        {activeTab === 'data' && <DataTools bookings={bookings} setBookings={setBookings} />}
+        {activeTab === 'data' && <DataTools bookings={bookings} setBookings={setBookings} syncState={syncState} />}
       </main>
+    </div>
+  );
+}
+
+
+function LoadingScreen() {
+  return (
+    <div className="auth-shell">
+      <div className="auth-card">
+        <div className="brand-icon"><Plane size={24} /></div>
+        <span className="eyebrow">Checking account</span>
+        <h1>Loading Points Atlas…</h1>
+        <p>Checking whether this deployment has account storage configured.</p>
+      </div>
+    </div>
+  );
+}
+
+function AuthScreen({ auth }) {
+  const [mode, setMode] = useState('login');
+  const [values, setValues] = useState({ name: '', email: '', password: '' });
+  const [localError, setLocalError] = useState('');
+  const isRegister = mode === 'register';
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    setLocalError('');
+    try {
+      await (isRegister ? auth.register(values) : auth.login(values));
+    } catch (err) {
+      setLocalError(err.message || 'Authentication failed');
+    }
+  }
+
+  return (
+    <div className="auth-shell">
+      <form className="auth-card" onSubmit={handleSubmit}>
+        <div className="brand-icon"><Plane size={24} /></div>
+        <span className="eyebrow"><User size={14} /> Accounts</span>
+        <h1>{isRegister ? 'Create your tracker' : 'Sign in to Points Atlas'}</h1>
+        <p>{isRegister ? 'Each friend gets their own private dashboard and D1-synced booking history.' : 'Use your account to keep your award-travel tracking separate from everyone else.'}</p>
+
+        {isRegister && (
+          <label>
+            Name
+            <input value={values.name} onChange={(e) => setValues((current) => ({ ...current, name: e.target.value }))} placeholder="Alex" />
+          </label>
+        )}
+        <label>
+          Email
+          <input type="email" value={values.email} onChange={(e) => setValues((current) => ({ ...current, email: e.target.value }))} placeholder="you@example.com" required />
+        </label>
+        <label>
+          Password
+          <input type="password" value={values.password} onChange={(e) => setValues((current) => ({ ...current, password: e.target.value }))} placeholder="At least 8 characters" required minLength={8} />
+        </label>
+
+        {(localError || auth.error) && <div className="auth-error">{localError || auth.error}</div>}
+        <button className="primary-button" type="submit" disabled={auth.loading}>{auth.loading ? 'Working…' : isRegister ? 'Create account' : 'Sign in'}</button>
+        <button
+          className="ghost-button"
+          type="button"
+          onClick={() => {
+            setMode(isRegister ? 'login' : 'register');
+            setLocalError('');
+          }}
+        >
+          {isRegister ? 'Already have an account? Sign in' : 'Need an account? Create one'}
+        </button>
+      </form>
     </div>
   );
 }
@@ -1292,10 +1501,43 @@ function DetailItem({ label, value }) {
   return <div className="detail-item"><span>{label}</span><strong>{value}</strong></div>;
 }
 
-function DataTools({ bookings, setBookings }) {
+function getImportBatchLabel(booking) {
+  return booking.importFileName || booking.importSheetName || 'Excel import';
+}
+
+function summarizeImportBatches(bookings) {
+  const batches = new Map();
+  bookings.forEach((booking) => {
+    if (!booking.importBatchId) return;
+    if (!batches.has(booking.importBatchId)) {
+      batches.set(booking.importBatchId, {
+        id: booking.importBatchId,
+        label: getImportBatchLabel(booking),
+        importedAt: booking.importedAt || '',
+        count: 0,
+        points: 0
+      });
+    }
+    const batch = batches.get(booking.importBatchId);
+    batch.count += 1;
+    batch.points += toNumber(booking.totalPointsUsed);
+    if (!batch.importedAt || (booking.importedAt && booking.importedAt < batch.importedAt)) batch.importedAt = booking.importedAt || batch.importedAt;
+  });
+  return [...batches.values()].sort((a, b) => (b.importedAt || '').localeCompare(a.importedAt || ''));
+}
+
+function formatImportDate(value) {
+  if (!value) return 'Unknown date';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Unknown date';
+  return date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+function DataTools({ bookings, setBookings, syncState }) {
   const excelRef = useRef(null);
   const jsonRef = useRef(null);
   const [status, setStatus] = useState('');
+  const importBatches = useMemo(() => summarizeImportBatches(bookings), [bookings]);
 
   function exportJson() {
     const blob = new Blob([JSON.stringify(bookings, null, 2)], { type: 'application/json' });
@@ -1349,8 +1591,18 @@ function DataTools({ bookings, setBookings }) {
       setStatus('No rows found in Sheet 1.');
       return;
     }
-    setBookings((current) => [...imported, ...current]);
-    setStatus(`Imported ${imported.length} bookings from Sheet 1.`);
+    const importBatchId = uid();
+    const importedAt = new Date().toISOString();
+    const taggedImport = imported.map((booking) => normalizeBooking({
+      ...booking,
+      importBatchId,
+      importedAt,
+      importFileName: file.name || 'Excel import',
+      importSheetName: firstSheet,
+      updatedAt: importedAt
+    }));
+    setBookings((current) => [...taggedImport, ...current]);
+    setStatus(`Imported ${taggedImport.length} bookings from ${file.name || 'Sheet 1'}. You can delete this import batch later.`);
     excelRef.current.value = '';
   }
 
@@ -1365,6 +1617,13 @@ function DataTools({ bookings, setBookings }) {
     jsonRef.current.value = '';
   }
 
+  function deleteImportBatch(batch) {
+    if (!batch) return;
+    if (!window.confirm(`Delete ${batch.count} bookings from ${batch.label}?`)) return;
+    setBookings((current) => current.filter((booking) => booking.importBatchId !== batch.id));
+    setStatus(`Deleted ${batch.count} bookings from ${batch.label}.`);
+  }
+
   function clearData() {
     if (!bookings.length) return;
     if (!window.confirm('Clear all locally stored bookings? Export a backup first if needed.')) return;
@@ -1376,9 +1635,10 @@ function DataTools({ bookings, setBookings }) {
     <div className="data-tools">
       <section className="data-card hero-panel smaller">
         <div>
-          <span className="eyebrow"><Database size={14} /> Local data</span>
-          <h3>Your data lives in this browser</h3>
-          <p>Deploy the app publicly, then import your spreadsheet privately in your own browser. Use JSON export as your backup.</p>
+          <span className="eyebrow"><Database size={14} /> {syncState.mode === 'cloud' ? 'Cloud data' : 'Local data'}</span>
+          <h3>{syncState.mode === 'cloud' ? 'Your data syncs to D1' : 'Your data lives in this browser'}</h3>
+          <p>{syncState.mode === 'cloud' ? 'Bookings are saved through the Pages Function API backed by Cloudflare D1. JSON export is still recommended before large imports.' : 'D1 storage is unavailable in this environment, so changes are saved to this browser. Use JSON export as your backup.'}</p>
+          {syncState.error && <p className="storage-warning">Storage note: {syncState.error}</p>}
         </div>
         <div className="hero-metric">
           <span>Saved bookings</span>
@@ -1411,10 +1671,31 @@ function DataTools({ bookings, setBookings }) {
           </div>
         </section>
 
+        <section className="data-card import-batches">
+          <Database size={28} />
+          <h3>Excel import batches</h3>
+          <p>Delete all bookings from a previous Excel import without touching manually added bookings.</p>
+          {importBatches.length ? (
+            <div className="import-batch-list">
+              {importBatches.map((batch) => (
+                <div className="import-batch-row" key={batch.id}>
+                  <div>
+                    <strong>{batch.label}</strong>
+                    <span>{batch.count} bookings · {points(batch.points)} pts · {formatImportDate(batch.importedAt)}</span>
+                  </div>
+                  <button className="ghost-button danger" onClick={() => deleteImportBatch(batch)}><Trash2 size={16} /> Delete import</button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p>No Excel imports with batch tracking yet.</p>
+          )}
+        </section>
+
         <section className="data-card danger-zone">
           <X size={28} />
-          <h3>Clear local data</h3>
-          <p>This only clears the current browser's stored data.</p>
+          <h3>Clear all data</h3>
+          <p>This clears every saved booking in the current storage mode.</p>
           <button className="ghost-button danger" onClick={clearData}><Trash2 size={16} /> Clear all</button>
         </section>
       </div>

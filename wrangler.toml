@@ -1,3 +1,9 @@
 name = "points-redemption-dashboard"
 compatibility_date = "2026-06-16"
 pages_build_output_dir = "dist"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "points-redemption-dashboard"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+migrations_dir = "migrations"
