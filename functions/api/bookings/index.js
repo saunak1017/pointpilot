@@ -1,14 +1,4 @@
-const jsonHeaders = {
-  'Content-Type': 'application/json; charset=utf-8',
-  'Cache-Control': 'no-store'
-};
-
-function jsonResponse(body, init = {}) {
-  return new Response(JSON.stringify(body), {
-    ...init,
-    headers: { ...jsonHeaders, ...(init.headers || {}) }
-  });
-}
+import { jsonHeaders, jsonResponse, requireUser } from '../_auth.js';
 
 function normalizeStoredBooking(row) {
   return {
@@ -19,18 +9,20 @@ function normalizeStoredBooking(row) {
   };
 }
 
-export async function onRequestGet({ env }) {
-  if (!env.DB) return jsonResponse({ error: 'D1 binding DB is not configured.' }, { status: 503 });
+export async function onRequestGet({ request, env }) {
+  const user = await requireUser(request, env);
+  if (user instanceof Response) return user;
 
   const { results } = await env.DB.prepare(
-    'SELECT id, payload, created_at, updated_at FROM bookings ORDER BY updated_at DESC, created_at DESC'
-  ).all();
+    'SELECT id, payload, created_at, updated_at FROM bookings WHERE user_id = ? ORDER BY updated_at DESC, created_at DESC'
+  ).bind(user.id).all();
 
   return jsonResponse({ bookings: results.map(normalizeStoredBooking) });
 }
 
 export async function onRequestPut({ request, env }) {
-  if (!env.DB) return jsonResponse({ error: 'D1 binding DB is not configured.' }, { status: 503 });
+  const user = await requireUser(request, env);
+  if (user instanceof Response) return user;
 
   const body = await request.json().catch(() => null);
   if (!body || !Array.isArray(body.bookings)) {
@@ -38,7 +30,7 @@ export async function onRequestPut({ request, env }) {
   }
 
   const now = new Date().toISOString();
-  const statements = [env.DB.prepare('DELETE FROM bookings')];
+  const statements = [env.DB.prepare('DELETE FROM bookings WHERE user_id = ?').bind(user.id)];
 
   body.bookings.forEach((booking) => {
     if (!booking || typeof booking !== 'object' || !booking.id) return;
@@ -46,8 +38,8 @@ export async function onRequestPut({ request, env }) {
     const updatedAt = booking.updatedAt || now;
     statements.push(
       env.DB.prepare(
-        'INSERT INTO bookings (id, payload, created_at, updated_at) VALUES (?, ?, ?, ?)'
-      ).bind(booking.id, JSON.stringify({ ...booking, createdAt, updatedAt }), createdAt, updatedAt)
+        'INSERT INTO bookings (id, user_id, payload, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'
+      ).bind(booking.id, user.id, JSON.stringify({ ...booking, createdAt, updatedAt }), createdAt, updatedAt)
     );
   });
 
