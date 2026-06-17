@@ -47,6 +47,10 @@ async function ignoreDuplicateColumn(work) {
   }
 }
 
+async function ensureColumn(env, table, columnDefinition) {
+  await ignoreDuplicateColumn(() => env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${columnDefinition}`).run());
+}
+
 export async function ensureAuthSchema(env) {
   await env.DB.batch([
     env.DB.prepare(`CREATE TABLE IF NOT EXISTS users (
@@ -84,6 +88,23 @@ export async function ensureAuthSchema(env) {
     env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_admin_sessions_admin_id ON admin_sessions(admin_id)'),
     env.DB.prepare('CREATE INDEX IF NOT EXISTS idx_admin_sessions_expires_at ON admin_sessions(expires_at)')
   ]);
+
+  await ensureColumn(env, 'users', 'name TEXT');
+  await ensureColumn(env, 'users', 'password_salt TEXT');
+  await ensureColumn(env, 'users', 'password_hash TEXT');
+  await ensureColumn(env, 'users', 'created_at TEXT');
+  await ensureColumn(env, 'users', 'updated_at TEXT');
+  await ensureColumn(env, 'sessions', 'user_id TEXT');
+  await ensureColumn(env, 'sessions', 'created_at TEXT');
+  await ensureColumn(env, 'sessions', 'expires_at TEXT');
+  await ensureColumn(env, 'admins', 'name TEXT');
+  await ensureColumn(env, 'admins', 'password_salt TEXT');
+  await ensureColumn(env, 'admins', 'password_hash TEXT');
+  await ensureColumn(env, 'admins', 'created_at TEXT');
+  await ensureColumn(env, 'admins', 'updated_at TEXT');
+  await ensureColumn(env, 'admin_sessions', 'admin_id TEXT');
+  await ensureColumn(env, 'admin_sessions', 'created_at TEXT');
+  await ensureColumn(env, 'admin_sessions', 'expires_at TEXT');
 }
 
 export async function ensureBookingsSchema(env) {
