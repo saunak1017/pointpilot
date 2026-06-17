@@ -447,7 +447,7 @@ function useAuth() {
         body: JSON.stringify(values)
       });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || 'Authentication failed');
+      if (!response.ok) throw new Error([payload.error, payload.detail].filter(Boolean).join(' ') || 'Authentication failed');
       setAuthState({ loading: false, authAvailable: true, user: payload.user, error: '' });
       return payload.user;
     } catch (err) {
@@ -731,6 +731,7 @@ function filterBookings(bookings, filters) {
 }
 
 function App() {
+  const path = window.location.pathname;
   const auth = useAuth();
   const [bookings, setBookings, syncState] = useBookings(auth);
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -780,8 +781,10 @@ function App() {
 
   const editingBooking = editingId ? bookings.find((item) => item.id === editingId) : null;
 
+  if (path === '/admin') return <AdminScreen />;
+  if (path === '/login') return <AuthScreen auth={auth} />;
   if (auth.loading && auth.authAvailable) return <LoadingScreen />;
-  if (auth.authAvailable && !auth.user) return <AuthScreen auth={auth} />;
+  if (auth.authAvailable && !auth.user) return <LandingLoginPrompt />;
 
   return (
     <div className="app-shell">
@@ -851,61 +854,165 @@ function LoadingScreen() {
   );
 }
 
+
+function LandingLoginPrompt() {
+  return (
+    <div className="auth-shell">
+      <div className="auth-card">
+        <div className="brand-icon"><Plane size={24} /></div>
+        <span className="eyebrow"><User size={14} /> Sign in required</span>
+        <h1>Open your tracker</h1>
+        <p>Use the user login your admin created for you, or go to the admin page to manage accounts.</p>
+        <button className="primary-button" type="button" onClick={() => { window.location.href = '/login'; }}>User login</button>
+        <button className="ghost-button" type="button" onClick={() => { window.location.href = '/admin'; }}>Admin</button>
+      </div>
+    </div>
+  );
+}
+
 function AuthScreen({ auth }) {
-  const [mode, setMode] = useState('login');
-  const [values, setValues] = useState({ name: '', email: '', password: '' });
+  const [values, setValues] = useState({ email: '', password: '' });
   const [localError, setLocalError] = useState('');
-  const isRegister = mode === 'register';
 
   async function handleSubmit(event) {
     event.preventDefault();
     setLocalError('');
     try {
-      await (isRegister ? auth.register(values) : auth.login(values));
+      await auth.login(values);
+      window.history.replaceState({}, '', '/');
     } catch (err) {
       setLocalError(err.message || 'Authentication failed');
     }
+  }
+
+  if (auth.user) {
+    window.history.replaceState({}, '', '/');
+    return <LoadingScreen />;
   }
 
   return (
     <div className="auth-shell">
       <form className="auth-card" onSubmit={handleSubmit}>
         <div className="brand-icon"><Plane size={24} /></div>
-        <span className="eyebrow"><User size={14} /> Accounts</span>
-        <h1>{isRegister ? 'Create your tracker' : 'Sign in to Points Atlas'}</h1>
-        <p>{isRegister ? 'Each friend gets their own private dashboard and D1-synced booking history.' : 'Use your account to keep your award-travel tracking separate from everyone else.'}</p>
-
-        {isRegister && (
-          <label>
-            Name
-            <input value={values.name} onChange={(e) => setValues((current) => ({ ...current, name: e.target.value }))} placeholder="Alex" />
-          </label>
-        )}
+        <span className="eyebrow"><User size={14} /> User login</span>
+        <h1>Sign in to Points Atlas</h1>
+        <p>Use the email and password your admin created for you.</p>
         <label>
           Email
           <input type="email" value={values.email} onChange={(e) => setValues((current) => ({ ...current, email: e.target.value }))} placeholder="you@example.com" required />
         </label>
         <label>
           Password
-          <input type="password" value={values.password} onChange={(e) => setValues((current) => ({ ...current, password: e.target.value }))} placeholder="At least 8 characters" required minLength={8} />
+          <input type="password" value={values.password} onChange={(e) => setValues((current) => ({ ...current, password: e.target.value }))} placeholder="Your password" required minLength={8} />
         </label>
-
         {(localError || auth.error) && <div className="auth-error">{localError || auth.error}</div>}
-        <button className="primary-button" type="submit" disabled={auth.loading}>{auth.loading ? 'Working…' : isRegister ? 'Create account' : 'Sign in'}</button>
-        <button
-          className="ghost-button"
-          type="button"
-          onClick={() => {
-            setMode(isRegister ? 'login' : 'register');
-            setLocalError('');
-          }}
-        >
-          {isRegister ? 'Already have an account? Sign in' : 'Need an account? Create one'}
-        </button>
+        <button className="primary-button" type="submit" disabled={auth.loading}>{auth.loading ? 'Working…' : 'Sign in'}</button>
+        <button className="ghost-button" type="button" onClick={() => { window.location.href = '/admin'; }}>Admin login</button>
       </form>
     </div>
   );
 }
+
+function AdminScreen() {
+  const [adminState, setAdminState] = useState({ loading: true, hasAdmin: false, admin: null, error: '' });
+  const [values, setValues] = useState({ name: '', email: '', password: '' });
+  const [newUser, setNewUser] = useState({ name: '', email: '', password: '' });
+  const [users, setUsers] = useState([]);
+  const [status, setStatus] = useState('');
+
+  async function loadAdmin() {
+    try {
+      const response = await fetch('/api/admin/status');
+      const payload = await response.json().catch(() => ({}));
+      setAdminState({ loading: false, hasAdmin: !!payload.hasAdmin, admin: payload.admin || null, error: response.ok ? '' : payload.error || 'Admin unavailable' });
+      if (payload.admin) loadUsers();
+    } catch (err) {
+      setAdminState({ loading: false, hasAdmin: false, admin: null, error: err.message || 'Admin unavailable' });
+    }
+  }
+
+  async function loadUsers() {
+    const response = await fetch('/api/admin/users');
+    const payload = await response.json().catch(() => ({}));
+    if (response.ok) setUsers(payload.users || []);
+  }
+
+  useEffect(() => {
+    loadAdmin();
+  }, []);
+
+  async function submitAdmin(event) {
+    event.preventDefault();
+    setStatus('');
+    const endpoint = adminState.hasAdmin ? '/api/admin/login' : '/api/admin/setup';
+    const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setStatus([payload.error, payload.detail].filter(Boolean).join(' ') || 'Admin action failed');
+      return;
+    }
+    setAdminState({ loading: false, hasAdmin: true, admin: payload.admin, error: '' });
+    loadUsers();
+  }
+
+  async function createUser(event) {
+    event.preventDefault();
+    setStatus('');
+    const response = await fetch('/api/admin/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newUser) });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setStatus([payload.error, payload.detail].filter(Boolean).join(' ') || 'Could not create user');
+      return;
+    }
+    setStatus(`Created ${payload.user.email}. Share /login with them.`);
+    setNewUser({ name: '', email: '', password: '' });
+    loadUsers();
+  }
+
+  async function logoutAdmin() {
+    await fetch('/api/admin/logout', { method: 'POST' }).catch(() => null);
+    setAdminState((current) => ({ ...current, admin: null }));
+    setUsers([]);
+  }
+
+  if (adminState.loading) return <LoadingScreen />;
+
+  return (
+    <div className="auth-shell admin-shell">
+      <div className="auth-card admin-card">
+        <div className="brand-icon"><Plane size={24} /></div>
+        <span className="eyebrow"><User size={14} /> Admin</span>
+        <h1>{adminState.admin ? 'Manage users' : adminState.hasAdmin ? 'Admin login' : 'Create the admin login'}</h1>
+        <p>{adminState.admin ? 'Create user logins for friends. They sign in at /login.' : adminState.hasAdmin ? 'Sign in with the admin account to create users.' : 'Set this up once. After that, only the admin can create user accounts.'}</p>
+        {adminState.admin ? (
+          <>
+            <div className="status-toast">Signed in as {adminState.admin.email}</div>
+            <form className="admin-user-form" onSubmit={createUser}>
+              <label>Name<input value={newUser.name} onChange={(e) => setNewUser((current) => ({ ...current, name: e.target.value }))} placeholder="Friend name" /></label>
+              <label>Email<input type="email" value={newUser.email} onChange={(e) => setNewUser((current) => ({ ...current, email: e.target.value }))} placeholder="friend@example.com" required /></label>
+              <label>Password<input type="text" value={newUser.password} onChange={(e) => setNewUser((current) => ({ ...current, password: e.target.value }))} placeholder="Temporary password" required minLength={8} /></label>
+              <button className="primary-button" type="submit">Create user</button>
+            </form>
+            <div className="admin-users-list">
+              {users.map((user) => <div className="import-batch-row" key={user.id}><div><strong>{user.email}</strong><span>{user.name || 'No name'}</span></div></div>)}
+            </div>
+            <button className="ghost-button" type="button" onClick={logoutAdmin}>Log out admin</button>
+          </>
+        ) : (
+          <form className="admin-user-form" onSubmit={submitAdmin}>
+            {!adminState.hasAdmin && <label>Name<input value={values.name} onChange={(e) => setValues((current) => ({ ...current, name: e.target.value }))} placeholder="Admin" /></label>}
+            <label>Email<input type="email" value={values.email} onChange={(e) => setValues((current) => ({ ...current, email: e.target.value }))} placeholder="admin@example.com" required /></label>
+            <label>Password<input type="password" value={values.password} onChange={(e) => setValues((current) => ({ ...current, password: e.target.value }))} placeholder={adminState.hasAdmin ? 'Admin password' : 'At least 10 characters'} required minLength={adminState.hasAdmin ? 1 : 10} /></label>
+            <button className="primary-button" type="submit">{adminState.hasAdmin ? 'Sign in' : 'Create admin'}</button>
+            <button className="ghost-button" type="button" onClick={() => { window.location.href = '/login'; }}>User login</button>
+          </form>
+        )}
+        {(status || adminState.error) && <div className="auth-error">{status || adminState.error}</div>}
+      </div>
+    </div>
+  );
+}
+
 
 function NavButton({ active, icon, children, onClick }) {
   return <button className={`nav-button ${active ? 'active' : ''}`} onClick={onClick}>{icon}{children}</button>;

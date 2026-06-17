@@ -16,12 +16,13 @@ No `package-lock.json` is included. The included `.npmrc` also sets `package-loc
 
 ## Accounts and data storage
 
-The dashboard supports email/password accounts backed by Cloudflare D1. Each account gets its own private booking set through the Pages Function API, so your friends can create accounts and track their own redemptions separately. The app still keeps a per-user `localStorage` cache as a fallback when the D1 binding is not available, such as during a plain Vite dev session. Use the Import / Export tab to back up your data as JSON or import your existing Excel tracker.
+The dashboard supports admin-created email/password accounts backed by Cloudflare D1. Each user gets their own private booking set through the Pages Function API, so your friends can track their own redemptions separately. The app still keeps a per-user `localStorage` cache as a fallback when the D1 binding is not available, such as during a plain Vite dev session. Use the Import / Export tab to back up your data as JSON or import your existing Excel tracker.
 
 Account security notes:
 - Passwords are salted and hashed with PBKDF2 SHA-256 in the Cloudflare Pages Function before being stored in D1.
 - Sessions are stored in D1 and sent to the browser as `HttpOnly` cookies.
-- By default, anyone who can reach your deployed app can create an account. Set the Pages environment variable `ALLOW_SIGNUPS=false` after creating the accounts you want if you want to close public registration.
+- Public self-signup is not used. Visit `/admin` to create the one admin login, then create user accounts from the admin screen.
+- Users sign in at `/login` with credentials created by the admin.
 
 ### Create and migrate the D1 database
 
@@ -43,11 +44,9 @@ Account security notes:
    npm run build
    npx wrangler pages dev dist
    ```
-6. Open the deployed app and create your first account. Share the app URL with friends so they can create their own accounts.
-7. Optional: after your intended users have accounts, disable new signups in Cloudflare Pages:
-   - Cloudflare Dashboard → Workers & Pages → your Pages project → Settings → Environment variables.
-   - Add `ALLOW_SIGNUPS` with value `false` for Production (and Preview if desired).
-   - Redeploy so the Pages Functions receive the new variable.
+6. Open `/admin` on the deployed app and create the admin login. This setup form only works while no admin exists.
+7. Stay on `/admin` to create user accounts for friends. Give each friend their email/password and send them to `/login`.
+8. Users can then sign in at `/login` and use the main dashboard at `/`.
 
 ## Excel import
 

@@ -813,3 +813,16 @@ select option { color: #07111f; }
   color: var(--red);
   background: rgba(255, 107, 125, 0.08);
 }
+
+.admin-shell { align-items: start; }
+.admin-card { width: min(760px, 100%); }
+.admin-user-form {
+  display: grid;
+  gap: 12px;
+}
+.admin-users-list {
+  display: grid;
+  gap: 10px;
+  max-height: 280px;
+  overflow: auto;
+}

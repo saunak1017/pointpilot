@@ -1,9 +1,10 @@
-import { createSession, jsonHeaders, jsonResponse, normalizeEmail, publicUser, sessionCookie, verifyPassword } from '../../_auth.js';
+import { createSession, ensureAuthSchema, jsonHeaders, jsonResponse, normalizeEmail, publicUser, sessionCookie, verifyPassword } from '../../_auth.js';
 
 export async function onRequestPost({ request, env }) {
   if (!env.DB) return jsonResponse({ error: 'D1 binding DB is not configured.' }, { status: 503 });
 
   try {
+    await ensureAuthSchema(env);
     const body = await request.json().catch(() => null);
     const email = normalizeEmail(body?.email);
     const password = String(body?.password || '');
@@ -18,7 +19,7 @@ export async function onRequestPost({ request, env }) {
     const token = await createSession(env, user.id);
     return jsonResponse({ user: publicUser(user) }, { headers: { 'Set-Cookie': sessionCookie(token) } });
   } catch (err) {
-    return jsonResponse({ error: 'Sign in failed. Make sure D1 migrations have been applied.', detail: err.message }, { status: 500 });
+    return jsonResponse({ error: 'Sign in failed. Automatic D1 schema check could not finish.', detail: err.message }, { status: 500 });
   }
 }
 
