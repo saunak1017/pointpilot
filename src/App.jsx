@@ -59,6 +59,7 @@ const EMPTY_BOOKING = {
   departureDate: '',
   daysBeforeOverride: '',
   mainAirline: '',
+  passengerName: '',
   redemptionProgram: '',
   redemptionType: 'Redemption',
   fareType: 'Saver',
@@ -352,6 +353,7 @@ function importRowsFromSheet(rows) {
     .filter((row) => !Object.values(row).every(isNA))
     .map((row, index) => {
       const airline = cleanText(rowValue(row, ['Airline']));
+      const passengerName = cleanText(rowValue(row, ['Passenger', 'Passenger Name', 'Traveler', 'Traveler Name']));
       const origin = cleanText(rowValue(row, ['Origin'])).toUpperCase();
       const layoverRaw = cleanText(rowValue(row, ['Layover'])).toUpperCase();
       const layover = isNA(layoverRaw) ? '' : layoverRaw;
@@ -399,6 +401,7 @@ function importRowsFromSheet(rows) {
         departureDate: '',
         daysBeforeOverride: daysBefore || '',
         mainAirline: airline,
+        passengerName,
         redemptionProgram,
         redemptionType,
         fareType: 'Unknown',
@@ -713,7 +716,7 @@ function filterBookings(bookings, filters) {
     const route = getRoute(booking);
     const query = filters.query.trim().toLowerCase();
     if (query) {
-      const haystack = [booking.tripName, booking.mainAirline, booking.redemptionProgram, booking.redemptionType, booking.fareType, route, booking.notes, ...(booking.segments || []).flatMap((s) => [s.operatingAirline, s.flightNumber, s.cabin, s.aircraft, s.product, s.origin, s.destination])]
+      const haystack = [booking.tripName, booking.mainAirline, booking.passengerName, booking.redemptionProgram, booking.redemptionType, booking.fareType, route, booking.notes, ...(booking.segments || []).flatMap((s) => [s.operatingAirline, s.flightNumber, s.cabin, s.aircraft, s.product, s.origin, s.destination])]
         .join(' ')
         .toLowerCase();
       if (!haystack.includes(query)) return false;
@@ -1358,6 +1361,7 @@ function BookingForm({ initialBooking, onSave, onCancel }) {
         <div className="form-grid four">
           <TextInput label="Trip name" value={booking.tripName} onChange={(v) => update('tripName', v)} placeholder="India return Jan 2026" />
           <TextInput label="Main airline" value={booking.mainAirline} onChange={(v) => update('mainAirline', v)} placeholder="Virgin Atlantic" />
+          <TextInput label="Passenger name" value={booking.passengerName} onChange={(v) => update('passengerName', v)} placeholder="Alex Johnson" />
           <TextInput label="Redemption program" value={booking.redemptionProgram} onChange={(v) => update('redemptionProgram', v)} placeholder="Virgin Atlantic Flying Club" />
           <SelectInput label="Redemption type" value={booking.redemptionType} onChange={(v) => update('redemptionType', v)} options={DEFAULT_REDEMPTION_TYPES} allowCustom />
           <SelectInput label="Fare type" value={booking.fareType} onChange={(v) => update('fareType', v)} options={DEFAULT_FARE_TYPES} allowCustom />
@@ -1546,7 +1550,7 @@ function BookingsView({ bookings, onEdit, onDelete, onDuplicate }) {
             <div className="route-chip"><Plane size={16} /> {booking.route}</div>
             <div className="booking-title">
               <strong>{booking.tripName || booking.route}</strong>
-              <span>{booking.redemptionProgram || 'No program'} · {booking.redemptionType || 'No type'} · {booking.fareType || 'No fare type'}</span>
+              <span>{booking.passengerName ? `${booking.passengerName} · ` : ''}{booking.redemptionProgram || 'No program'} · {booking.redemptionType || 'No type'} · {booking.fareType || 'No fare type'}</span>
             </div>
             <div className="booking-numbers">
               <strong>{points(booking.totalPointsUsed)} pts</strong>
@@ -1562,6 +1566,7 @@ function BookingsView({ bookings, onEdit, onDelete, onDuplicate }) {
                 <button className="ghost-button danger" onClick={() => onDelete(booking.id)}><Trash2 size={15} /> Delete</button>
               </div>
               <div className="detail-grid">
+                <DetailItem label="Passenger" value={booking.passengerName || '—'} />
                 <DetailItem label="Booking date" value={booking.bookingDate || '—'} />
                 <DetailItem label="Departure date" value={booking.departureDate || '—'} />
                 <DetailItem label="Lead days" value={booking.leadDays === null ? '—' : `${booking.leadDays} days`} />
@@ -1664,6 +1669,7 @@ function DataTools({ bookings, setBookings, syncState }) {
       'Departure Date': booking.departureDate,
       'Lead Days': getLeadDays(booking) || '',
       Airline: booking.mainAirline,
+      Passenger: booking.passengerName,
       'Redemption Program': booking.redemptionProgram,
       'Redemption Type': booking.redemptionType,
       'Fare Type': booking.fareType,
