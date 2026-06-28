@@ -59,6 +59,7 @@ const EMPTY_BOOKING = {
   departureDate: '',
   daysBeforeOverride: '',
   mainAirline: '',
+  passengerName: '',
   redemptionProgram: '',
   redemptionType: 'Redemption',
   fareType: 'Saver',
@@ -85,6 +86,10 @@ function blankSegment(order = 1) {
     order,
     origin: '',
     destination: '',
+    departureDate: '',
+    departureTime: '',
+    arrivalDate: '',
+    arrivalTime: '',
     operatingAirline: '',
     flightNumber: '',
     cabin: '',
@@ -227,6 +232,10 @@ function normalizeBooking(input) {
     segments: (input.segments && input.segments.length ? input.segments : [blankSegment(1)]).map((s, idx) => ({
       ...blankSegment(idx + 1),
       ...s,
+      departureDate: s.departureDate || s.depDate || s.date || '',
+      departureTime: s.departureTime || s.depTime || s.time || '',
+      arrivalDate: s.arrivalDate || s.arrDate || '',
+      arrivalTime: s.arrivalTime || s.arrTime || '',
       id: s.id || uid(),
       order: s.order || idx + 1
     })),
@@ -352,6 +361,7 @@ function importRowsFromSheet(rows) {
     .filter((row) => !Object.values(row).every(isNA))
     .map((row, index) => {
       const airline = cleanText(rowValue(row, ['Airline']));
+      const passengerName = cleanText(rowValue(row, ['Passenger', 'Passenger Name', 'Traveler', 'Traveler Name']));
       const origin = cleanText(rowValue(row, ['Origin'])).toUpperCase();
       const layoverRaw = cleanText(rowValue(row, ['Layover'])).toUpperCase();
       const layover = isNA(layoverRaw) ? '' : layoverRaw;
@@ -382,6 +392,10 @@ function importRowsFromSheet(rows) {
           order: segIdx + 1,
           origin: airports[segIdx] || '',
           destination: airports[segIdx + 1] || '',
+          departureDate: '',
+          departureTime: '',
+          arrivalDate: '',
+          arrivalTime: '',
           operatingAirline: airline,
           flightNumber: '',
           cabin: cleanText(cabinLines[segIdx] || cabinLines[0] || ''),
@@ -399,6 +413,7 @@ function importRowsFromSheet(rows) {
         departureDate: '',
         daysBeforeOverride: daysBefore || '',
         mainAirline: airline,
+        passengerName,
         redemptionProgram,
         redemptionType,
         fareType: 'Unknown',
@@ -713,7 +728,7 @@ function filterBookings(bookings, filters) {
     const route = getRoute(booking);
     const query = filters.query.trim().toLowerCase();
     if (query) {
-      const haystack = [booking.tripName, booking.mainAirline, booking.redemptionProgram, booking.redemptionType, booking.fareType, route, booking.notes, ...(booking.segments || []).flatMap((s) => [s.operatingAirline, s.flightNumber, s.cabin, s.aircraft, s.product, s.origin, s.destination])]
+      const haystack = [booking.tripName, booking.mainAirline, booking.passengerName, booking.redemptionProgram, booking.redemptionType, booking.fareType, route, booking.notes, ...(booking.segments || []).flatMap((s) => [s.departureDate, s.departureTime, s.arrivalDate, s.arrivalTime, s.operatingAirline, s.flightNumber, s.cabin, s.aircraft, s.product, s.origin, s.destination])]
         .join(' ')
         .toLowerCase();
       if (!haystack.includes(query)) return false;
@@ -728,6 +743,130 @@ function filterBookings(bookings, filters) {
     if (filters.source !== 'All' && !(booking.pointSources || []).some((s) => s.pointsProgram === filters.source || s.sourceType === filters.source)) return false;
     return true;
   });
+}
+
+
+function timeSortValue(value) {
+  const text = cleanText(value);
+  const match = text.match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return 24 * 60 + 99;
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function formatBoardDate(value) {
+  if (!value) return 'Date TBD';
+  const d = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }).toUpperCase();
+}
+
+function formatBoardDateLong(value) {
+  if (!value) return 'Date TBD';
+  const d = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleDateString(undefined, { weekday: 'short', month: 'long', day: 'numeric', year: 'numeric' }).toUpperCase();
+}
+
+function formatBoardTime(value) {
+  if (!value) return 'Time TBD';
+  const [hours, minutes] = value.split(':').map(Number);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return value;
+  const d = new Date(2000, 0, 1, hours, minutes);
+  return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+}
+
+function formatSplitFlapTime(value) {
+  if (!value) return 'TBD';
+  const [hours, minutes] = value.split(':').map(Number);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return value;
+  return `${String(hours).padStart(2, '0')}${String(minutes).padStart(2, '0')}`;
+}
+
+function getFlightCode(segment) {
+  return cleanText(segment.flightNumber) || cleanText(segment.operatingAirline) || 'Flight TBD';
+}
+
+function buildDepartureBoardGroups(bookings) {
+  const groupedFlights = new Map();
+  bookings.forEach((booking) => {
+    (booking.segments || []).forEach((segment) => {
+      const departureDate = segment.departureDate || booking.departureDate || '';
+      const departureTime = segment.departureTime || '';
+      const origin = cleanText(segment.origin).toUpperCase() || '---';
+      const destination = cleanText(segment.destination).toUpperCase() || '---';
+      const flightCode = getFlightCode(segment).toUpperCase();
+      const flightKey = (cleanText(segment.flightNumber) || flightCode).toUpperCase().replace(/\s+/g, '');
+      const key = [departureDate || 'Date TBD', departureTime || 'Time TBD', flightKey, origin, destination].join('|');
+      if (!groupedFlights.has(key)) {
+        groupedFlights.set(key, {
+          key,
+          departureDate,
+          departureTime,
+          origin,
+          destination,
+          flightCode,
+          cabin: segment.cabin || '',
+          aircraft: segment.aircraft || '',
+          passengers: new Map()
+        });
+      }
+      const flight = groupedFlights.get(key);
+      const passenger = cleanText(booking.passengerName) || 'Passenger TBD';
+      if (!flight.passengers.has(passenger)) flight.passengers.set(passenger, []);
+      flight.passengers.get(passenger).push({ booking, segment });
+    });
+  });
+
+  const byDate = new Map();
+  [...groupedFlights.values()]
+    .sort((a, b) => {
+      const dateCompare = (a.departureDate || '9999-99-99').localeCompare(b.departureDate || '9999-99-99');
+      if (dateCompare) return dateCompare;
+      const timeCompare = timeSortValue(a.departureTime) - timeSortValue(b.departureTime);
+      if (timeCompare) return timeCompare;
+      return a.flightCode.localeCompare(b.flightCode);
+    })
+    .forEach((flight) => {
+      const dateKey = flight.departureDate || 'Date TBD';
+      if (!byDate.has(dateKey)) byDate.set(dateKey, []);
+      byDate.get(dateKey).push(flight);
+    });
+  return [...byDate.entries()].map(([date, flights]) => ({ date, flights }));
+}
+
+function DepartureBoard({ bookings }) {
+  const days = useMemo(() => buildDepartureBoardGroups(bookings), [bookings]);
+  if (!days.length) return null;
+  return (
+    <section className="departure-board-card">
+      <div className="departure-board-header">
+        <span className="eyebrow"><Plane size={14} /> Flight summary</span>
+        <h3>Departure Board</h3>
+        <p>Flights are sorted by departure date, then local departure time, with passengers grouped when flight details match.</p>
+      </div>
+      <div className="departure-board">
+        {days.map((day) => (
+          <div className="board-day" key={day.date}>
+            <div className="board-date">{formatBoardDateLong(day.date)}</div>
+            <div className="board-rows">
+              {day.flights.map((flight) => {
+                const passengers = [...flight.passengers.keys()].sort((a, b) => a.localeCompare(b));
+                return (
+                  <div className="board-row" key={flight.key}>
+                    <span className="board-cell board-time">{formatSplitFlapTime(flight.departureTime)}</span>
+                    <span className="board-cell board-flight">{flight.flightCode}</span>
+                    <span className="board-cell board-route">{flight.origin} → {flight.destination}</span>
+                    <span className="board-cell board-cabin">{flight.cabin || 'Cabin TBD'}</span>
+                    <span className="board-cell board-pax"><strong>{passengers.length} pax</strong>{passengers.join(' / ')}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 function App() {
@@ -1358,6 +1497,7 @@ function BookingForm({ initialBooking, onSave, onCancel }) {
         <div className="form-grid four">
           <TextInput label="Trip name" value={booking.tripName} onChange={(v) => update('tripName', v)} placeholder="India return Jan 2026" />
           <TextInput label="Main airline" value={booking.mainAirline} onChange={(v) => update('mainAirline', v)} placeholder="Virgin Atlantic" />
+          <TextInput label="Passenger name" value={booking.passengerName} onChange={(v) => update('passengerName', v)} placeholder="Alex Johnson" />
           <TextInput label="Redemption program" value={booking.redemptionProgram} onChange={(v) => update('redemptionProgram', v)} placeholder="Virgin Atlantic Flying Club" />
           <SelectInput label="Redemption type" value={booking.redemptionType} onChange={(v) => update('redemptionType', v)} options={DEFAULT_REDEMPTION_TYPES} allowCustom />
           <SelectInput label="Fare type" value={booking.fareType} onChange={(v) => update('fareType', v)} options={DEFAULT_FARE_TYPES} allowCustom />
@@ -1408,6 +1548,10 @@ function BookingForm({ initialBooking, onSave, onCancel }) {
               <div className="form-grid five">
                 <TextInput label="Origin" value={segment.origin} onChange={(v) => updateSegment(segment.id, 'origin', v.toUpperCase())} placeholder="JFK" />
                 <TextInput label="Destination" value={segment.destination} onChange={(v) => updateSegment(segment.id, 'destination', v.toUpperCase())} placeholder="LHR" />
+                <DateInput label="Dep date" value={segment.departureDate} onChange={(v) => updateSegment(segment.id, 'departureDate', v)} />
+                <TimeInput label="Dep time" value={segment.departureTime} onChange={(v) => updateSegment(segment.id, 'departureTime', v)} helper="Stored as local time at departure airport" />
+                <DateInput label="Arr date" value={segment.arrivalDate} onChange={(v) => updateSegment(segment.id, 'arrivalDate', v)} />
+                <TimeInput label="Arr time" value={segment.arrivalTime} onChange={(v) => updateSegment(segment.id, 'arrivalTime', v)} helper="Stored as local time at arrival airport" />
                 <TextInput label="Operating airline" value={segment.operatingAirline} onChange={(v) => updateSegment(segment.id, 'operatingAirline', v)} placeholder="Qatar" />
                 <TextInput label="Flight #" value={segment.flightNumber} onChange={(v) => updateSegment(segment.id, 'flightNumber', v.toUpperCase())} placeholder="QR704" />
                 <SelectInput label="Cabin" value={segment.cabin} onChange={(v) => updateSegment(segment.id, 'cabin', v)} options={DEFAULT_CABINS} allowCustom />
@@ -1489,6 +1633,16 @@ function DateInput({ label, value, onChange }) {
   );
 }
 
+function TimeInput({ label, value, onChange, helper }) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <input type="time" value={value ?? ''} onChange={(e) => onChange(e.target.value)} />
+      {helper && <small>{helper}</small>}
+    </label>
+  );
+}
+
 function SelectInput({ label, value, onChange, options, allowCustom = false }) {
   const rendered = options.map((option) => (typeof option === 'string' ? { label: option, value: option } : option));
   const found = rendered.some((option) => option.value === value);
@@ -1540,13 +1694,14 @@ function BookingsView({ bookings, onEdit, onDelete, onDuplicate }) {
   if (!bookings.length) return <EmptyState />;
   return (
     <div className="bookings-view">
+      <DepartureBoard bookings={bookings} />
       {bookings.map((booking) => (
         <article className="booking-card" key={booking.id}>
           <button className="booking-summary" onClick={() => setOpenId(openId === booking.id ? null : booking.id)}>
             <div className="route-chip"><Plane size={16} /> {booking.route}</div>
             <div className="booking-title">
               <strong>{booking.tripName || booking.route}</strong>
-              <span>{booking.redemptionProgram || 'No program'} · {booking.redemptionType || 'No type'} · {booking.fareType || 'No fare type'}</span>
+              <span>{booking.passengerName ? `${booking.passengerName} · ` : ''}{booking.redemptionProgram || 'No program'} · {booking.redemptionType || 'No type'} · {booking.fareType || 'No fare type'}</span>
             </div>
             <div className="booking-numbers">
               <strong>{points(booking.totalPointsUsed)} pts</strong>
@@ -1562,6 +1717,7 @@ function BookingsView({ bookings, onEdit, onDelete, onDuplicate }) {
                 <button className="ghost-button danger" onClick={() => onDelete(booking.id)}><Trash2 size={15} /> Delete</button>
               </div>
               <div className="detail-grid">
+                <DetailItem label="Passenger" value={booking.passengerName || '—'} />
                 <DetailItem label="Booking date" value={booking.bookingDate || '—'} />
                 <DetailItem label="Departure date" value={booking.departureDate || '—'} />
                 <DetailItem label="Lead days" value={booking.leadDays === null ? '—' : `${booking.leadDays} days`} />
@@ -1571,14 +1727,15 @@ function BookingsView({ bookings, onEdit, onDelete, onDuplicate }) {
               </div>
               <h4>Segments</h4>
               <div className="mini-table">
-                <div className="mini-table-head"><span>Leg</span><span>Airline</span><span>Cabin</span><span>Aircraft</span><span>Product</span></div>
+                <div className="mini-table-head segment-table"><span>Leg</span><span>Dep</span><span>Arr</span><span>Airline</span><span>Cabin</span><span>Product</span></div>
                 {booking.segments.map((segment) => (
-                  <div className="mini-table-row" key={segment.id}>
+                  <div className="mini-table-row segment-table" key={segment.id}>
                     <span>{segment.origin} → {segment.destination}</span>
+                    <span>{formatBoardDate(segment.departureDate || booking.departureDate)} {formatBoardTime(segment.departureTime)}</span>
+                    <span>{formatBoardDate(segment.arrivalDate)} {formatBoardTime(segment.arrivalTime)}</span>
                     <span>{segment.operatingAirline || '—'} {segment.flightNumber || ''}</span>
                     <span>{segment.cabin || '—'}</span>
-                    <span>{segment.aircraft || '—'}</span>
-                    <span>{segment.product || segment.productNotes || '—'}</span>
+                    <span>{segment.product || segment.productNotes || segment.aircraft || '—'}</span>
                   </div>
                 ))}
               </div>
@@ -1664,6 +1821,7 @@ function DataTools({ bookings, setBookings, syncState }) {
       'Departure Date': booking.departureDate,
       'Lead Days': getLeadDays(booking) || '',
       Airline: booking.mainAirline,
+      Passenger: booking.passengerName,
       'Redemption Program': booking.redemptionProgram,
       'Redemption Type': booking.redemptionType,
       'Fare Type': booking.fareType,
